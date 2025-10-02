@@ -176,85 +176,89 @@ function renderError(message: string) {
 // --- TIME & FILTERING LOGIC ---
 
 /**
- * Determines the current status of a happy hour (active, upcoming, or ended).
+ * Determines the current status of a happy hour (active, upcoming, or ended) using native Date objects for robust cross-platform compatibility.
  * @param hh The happy hour object.
  * @param now The current Date object.
  * @returns A HappyHourStatus object.
  */
 function getHappyHourStatus(hh: HappyHour, now: Date): HappyHourStatus {
     const dayMap = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-    const todayStr = dayMap[now.getDay()];
-    const yesterdayStr = dayMap[(now.getDay() + 6) % 7];
+    const nowDayStr = dayMap[now.getDay()];
+    
+    const yesterday = new Date(now);
+    yesterday.setDate(now.getDate() - 1);
+    const yesterdayDayStr = dayMap[yesterday.getDay()];
 
-    const todayRanges = hh.days.includes(todayStr) ? hh.timeRanges : [];
-    const yesterdayRanges = hh.days.includes(yesterdayStr) ? hh.timeRanges : [];
+    const timeIntervals: { start: Date; end: Date }[] = [];
 
-    const nowMinutes = now.getHours() * 60 + now.getMinutes();
+    // Helper to create date objects from a time string like "16:00"
+    const createDateFromTime = (baseDate: Date, timeStr: string): Date => {
+        const [hours, minutes] = timeStr.split(':').map(Number);
+        const d = new Date(baseDate);
+        d.setHours(hours, minutes, 0, 0);
+        return d;
+    };
 
-    let activeInterval = null;
-    let nextUpcomingInterval = null;
-    let minMinutesUntilStart = Infinity;
+    // Process time ranges for a given day to generate concrete start/end Date objects
+    const processRangesForDay = (dayStr: string, baseDate: Date) => {
+        if (hh.days.includes(dayStr)) {
+            for (const range of hh.timeRanges) {
+                if (!range.start || !range.end) continue; // Skip malformed ranges
+                const startDate = createDateFromTime(baseDate, range.start);
+                let endDate = createDateFromTime(baseDate, range.end);
 
-    const intervals = [];
-
-    // Check yesterday's ranges for overnight carry-over
-    for (const range of yesterdayRanges) {
-        const [startH, startM] = range.start.split(':').map(Number);
-        const [endH, endM] = range.end.split(':').map(Number);
-        const startTotalMinutes = startH * 60 + startM;
-        let endTotalMinutes = endH * 60 + endM;
-        if (endTotalMinutes < startTotalMinutes) { // Overnight
-            endTotalMinutes += 24 * 60; // Add 24 hours
-            if (nowMinutes + 24 * 60 >= startTotalMinutes && nowMinutes + 24 * 60 < endTotalMinutes) {
-                intervals.push({start: startTotalMinutes, end: endTotalMinutes, isOvernight: true});
+                // Handle overnight ranges (e.g., 22:00 - 02:00) by adding a day to the end date
+                if (endDate <= startDate) {
+                    endDate.setDate(endDate.getDate() + 1);
+                }
+                timeIntervals.push({ start: startDate, end: endDate });
             }
         }
-    }
-    
-    // Check today's ranges
-    for (const range of todayRanges) {
-        const [startH, startM] = range.start.split(':').map(Number);
-        const [endH, endM] = range.end.split(':').map(Number);
-        let startTotalMinutes = startH * 60 + startM;
-        let endTotalMinutes = endH * 60 + endM;
-         if (endTotalMinutes < startTotalMinutes) { // Overnight
-            endTotalMinutes += 24 * 60;
-        }
-        intervals.push({start: startTotalMinutes, end: endTotalMinutes, isOvernight: false});
-    }
+    };
 
-    for (const interval of intervals) {
-        const currentNowMinutes = interval.isOvernight ? nowMinutes + 24*60 : nowMinutes;
-        if(currentNowMinutes >= interval.start && currentNowMinutes < interval.end) {
+    // Check schedules from yesterday (for overnight) and today
+    processRangesForDay(yesterdayDayStr, yesterday);
+    processRangesForDay(nowDayStr, now);
+    
+    let activeInterval: { start: Date; end: Date } | null = null;
+    let nextUpcomingInterval: { start: Date; end: Date } | null = null;
+    let minMillisUntilStart = Infinity;
+
+    for (const interval of timeIntervals) {
+        // Check if the current time falls within this interval
+        if (now >= interval.start && now < interval.end) {
             activeInterval = interval;
-            break;
+            break; // Found the active one, no need to check further
         }
-        if (currentNowMinutes < interval.start) {
-            const diff = interval.start - currentNowMinutes;
-            if (diff < minMinutesUntilStart) {
-                minMinutesUntilStart = diff;
+
+        // If not active, check if it's an upcoming interval
+        if (interval.start > now) {
+            const diff = interval.start.getTime() - now.getTime();
+            if (diff < minMillisUntilStart) {
+                minMillisUntilStart = diff;
                 nextUpcomingInterval = interval;
             }
         }
     }
 
     if (activeInterval) {
-        const currentNowMinutes = activeInterval.isOvernight ? nowMinutes + 24*60 : nowMinutes;
+        const millisUntilEnd = activeInterval.end.getTime() - now.getTime();
         return {
             status: 'active',
-            minutesUntilEnd: activeInterval.end - currentNowMinutes
+            minutesUntilEnd: Math.round(millisUntilEnd / 60000)
         };
     }
 
     if (nextUpcomingInterval) {
         return {
             status: 'upcoming',
-            minutesUntilStart: minMinutesUntilStart
+            minutesUntilStart: Math.round(minMillisUntilStart / 60000)
         };
     }
 
     return { status: 'ended' };
 }
+
 
 /**
  * Applies the current filters and sort order to the main happy hour list and re-renders the view.
@@ -569,7 +573,6 @@ function setupEventListeners() {
  */
 async function main() {
   try {
-    elements.appContainer.classList.remove('loading');
     happyHours = loadHappyHoursFromDB();
     filterAndRender(); // Initial render with filters and default sort applied
     setupEventListeners();
