@@ -1,0 +1,16 @@
+{
+  "name": "Key West Happy Hour Finder",
+  "short_name": "KW Happy Hour",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#f0f2f5",
+  "theme_color": "#009688",
+  "description": "Find active and upcoming happy hours in Key West, Florida.",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}
