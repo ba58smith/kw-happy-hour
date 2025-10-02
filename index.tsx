@@ -176,7 +176,9 @@ function renderError(message: string) {
 // --- TIME & FILTERING LOGIC ---
 
 /**
- * Determines the current status of a happy hour (active, upcoming, or ended) using native Date objects for robust cross-platform compatibility.
+ * [REWRITTEN FOR ROBUSTNESS]
+ * Determines the current status of a happy hour (active, upcoming, or ended) using a simple, procedural check with native Date objects.
+ * This approach is more efficient and reliable across different devices than the previous implementation.
  * @param hh The happy hour object.
  * @param now The current Date object.
  * @returns A HappyHourStatus object.
@@ -184,14 +186,10 @@ function renderError(message: string) {
 function getHappyHourStatus(hh: HappyHour, now: Date): HappyHourStatus {
     const dayMap = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
     const nowDayStr = dayMap[now.getDay()];
-    
     const yesterday = new Date(now);
     yesterday.setDate(now.getDate() - 1);
     const yesterdayDayStr = dayMap[yesterday.getDay()];
 
-    const timeIntervals: { start: Date; end: Date }[] = [];
-
-    // Helper to create date objects from a time string like "16:00"
     const createDateFromTime = (baseDate: Date, timeStr: string): Date => {
         const [hours, minutes] = timeStr.split(':').map(Number);
         const d = new Date(baseDate);
@@ -199,63 +197,70 @@ function getHappyHourStatus(hh: HappyHour, now: Date): HappyHourStatus {
         return d;
     };
 
-    // Process time ranges for a given day to generate concrete start/end Date objects
-    const processRangesForDay = (dayStr: string, baseDate: Date) => {
-        if (hh.days.includes(dayStr)) {
-            for (const range of hh.timeRanges) {
-                if (!range.start || !range.end) continue; // Skip malformed ranges
-                const startDate = createDateFromTime(baseDate, range.start);
-                let endDate = createDateFromTime(baseDate, range.end);
+    let soonestUpcomingStart: Date | null = null;
 
-                // Handle overnight ranges (e.g., 22:00 - 02:00) by adding a day to the end date
-                if (endDate <= startDate) {
-                    endDate.setDate(endDate.getDate() + 1);
+    // --- STEP 1: Check if we are currently in an "overnight" happy hour that started yesterday. ---
+    if (hh.days.includes(yesterdayDayStr)) {
+        for (const range of hh.timeRanges) {
+            if (!range.start || !range.end) continue;
+            
+            const startHours = parseInt(range.start.split(':')[0]);
+            const endHours = parseInt(range.end.split(':')[0]);
+
+            if (endHours < startHours) { // This is an overnight range
+                const startDate = createDateFromTime(yesterday, range.start);
+                const endDate = createDateFromTime(now, range.end);
+                
+                if (now >= startDate && now < endDate) {
+                    const millisUntilEnd = endDate.getTime() - now.getTime();
+                    return {
+                        status: 'active',
+                        minutesUntilEnd: Math.round(millisUntilEnd / 60000)
+                    };
                 }
-                timeIntervals.push({ start: startDate, end: endDate });
-            }
-        }
-    };
-
-    // Check schedules from yesterday (for overnight) and today
-    processRangesForDay(yesterdayDayStr, yesterday);
-    processRangesForDay(nowDayStr, now);
-    
-    let activeInterval: { start: Date; end: Date } | null = null;
-    let nextUpcomingInterval: { start: Date; end: Date } | null = null;
-    let minMillisUntilStart = Infinity;
-
-    for (const interval of timeIntervals) {
-        // Check if the current time falls within this interval
-        if (now >= interval.start && now < interval.end) {
-            activeInterval = interval;
-            break; // Found the active one, no need to check further
-        }
-
-        // If not active, check if it's an upcoming interval
-        if (interval.start > now) {
-            const diff = interval.start.getTime() - now.getTime();
-            if (diff < minMillisUntilStart) {
-                minMillisUntilStart = diff;
-                nextUpcomingInterval = interval;
             }
         }
     }
 
-    if (activeInterval) {
-        const millisUntilEnd = activeInterval.end.getTime() - now.getTime();
-        return {
-            status: 'active',
-            minutesUntilEnd: Math.round(millisUntilEnd / 60000)
-        };
+    // --- STEP 2: Check for active or upcoming happy hours based on today's schedule. ---
+    if (hh.days.includes(nowDayStr)) {
+        for (const range of hh.timeRanges) {
+            if (!range.start || !range.end) continue;
+            
+            const startDate = createDateFromTime(now, range.start);
+            let endDate = createDateFromTime(now, range.end);
+
+            if (endDate <= startDate) { // Handle overnight range for today
+                endDate.setDate(endDate.getDate() + 1);
+            }
+            
+            // Is it active right now?
+            if (now >= startDate && now < endDate) {
+                const millisUntilEnd = endDate.getTime() - now.getTime();
+                return {
+                    status: 'active',
+                    minutesUntilEnd: Math.round(millisUntilEnd / 60000)
+                };
+            }
+            // Is it upcoming later today?
+            else if (startDate > now) {
+                if (!soonestUpcomingStart || startDate < soonestUpcomingStart) {
+                    soonestUpcomingStart = startDate;
+                }
+            }
+        }
     }
 
-    if (nextUpcomingInterval) {
+    // --- STEP 3: If we found any upcoming slots, return the soonest one. ---
+    if (soonestUpcomingStart) {
+        const millisUntilStart = soonestUpcomingStart.getTime() - now.getTime();
         return {
             status: 'upcoming',
-            minutesUntilStart: Math.round(minMillisUntilStart / 60000)
+            minutesUntilStart: Math.round(millisUntilStart / 60000)
         };
     }
 
+    // --- STEP 4: If nothing else matched, it has ended for the day. ---
     return { status: 'ended' };
 }
 
